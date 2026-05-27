@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Leaflet の z-index をヘッダーに負けないよう調整 */
+.leaflet-top,
+.leaflet-bottom {
+  z-index: 400;
+}
