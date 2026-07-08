@@ -8,8 +8,19 @@ import { initSocket } from './socket';
 
 const PORT = process.env.PORT ?? 3001;
 const CLIENT_ORIGIN_RAW = process.env.CLIENT_ORIGIN ?? '*';
+
+function normalizeOrigin(origin: string): string {
+  const trimmed = origin.trim();
+
+  try {
+    return new URL(trimmed).origin;
+  } catch {
+    return trimmed.replace(/\/+$/, '');
+  }
+}
+
 const ALLOWED_ORIGINS =
-  CLIENT_ORIGIN_RAW === '*' ? true : CLIENT_ORIGIN_RAW.split(',').map((o) => o.trim());
+  CLIENT_ORIGIN_RAW === '*' ? true : CLIENT_ORIGIN_RAW.split(',').map(normalizeOrigin);
 
 const app = express();
 app.use(cors({ origin: ALLOWED_ORIGINS }));
@@ -51,7 +62,7 @@ function getLanAddresses(): LanAddress[] {
 function printStartupInfo(port: string | number): void {
   const lanAddresses = getLanAddresses();
 
-  console.log(`Server listening on 0.0.0.0:${port}`);
+  console.log(`Server listening on port ${port}`);
   console.log(`Allowing CORS from: ${CLIENT_ORIGIN_RAW}`);
   console.log('');
   console.log('Android app connection URL candidates:');
@@ -71,6 +82,6 @@ function printStartupInfo(port: string | number): void {
   console.log('');
 }
 
-httpServer.listen(Number(PORT), '0.0.0.0', () => {
+httpServer.listen(Number(PORT), () => {
   printStartupInfo(PORT);
 });
