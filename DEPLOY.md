@@ -25,7 +25,7 @@ After the client is deployed, replace `*` with the actual Vercel URL.
 
 Railway should use:
 
-- Build command: `npm ci && npm run build`
+- Build command: `npm run build`
 - Start command: `npm run start`
 - Health check path: `/health`
 
