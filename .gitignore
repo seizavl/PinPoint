@@ -35,3 +35,7 @@ coverage/
 # Misc
 .cache/
 .turbo/
+
+# Cloudflare Wrangler (local state / cache)
+.wrangler/
+.dev.vars

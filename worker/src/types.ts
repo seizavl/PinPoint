@@ -1,3 +1,5 @@
+// client/src/types/index.ts と同内容。Cloudflare Worker 側でも同じ型を使用する。
+
 export type LocationFixMode = 'gps' | 'network' | 'hybrid';
 
 export type LocationSignal = 'gps' | 'wifi' | 'bluetooth' | 'mobile_network';
@@ -44,4 +46,12 @@ export interface BroadcastPayload {
   users: Record<string, LocationPayload>;
 }
 
-export type SendStatus = 'idle' | 'sending' | 'success' | 'error' | 'permission_denied';
+// クライアント⇔Worker 間の WebSocket メッセージ形式
+export interface ClientToServerMessage {
+  event: 'send_location';
+  payload: LocationPayload;
+}
+
+export type ServerToClientMessage =
+  | { event: 'locations_update'; payload: BroadcastPayload }
+  | { event: 'user_count'; payload: { count: number } };

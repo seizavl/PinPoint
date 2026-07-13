@@ -80,11 +80,20 @@ function projectSize(sizeM: number, distanceM: number, screenDim: number, fovDeg
 }
 
 function getUserId(): string {
-  const stored = localStorage.getItem('disaster_ar_user_id');
+  const stored = localStorage.getItem('pinpoint_user_id');
   if (stored) return stored;
   const id = crypto.randomUUID();
-  localStorage.setItem('disaster_ar_user_id', id);
+  localStorage.setItem('pinpoint_user_id', id);
   return id;
+}
+
+// 画面外ピンを画面端からどれだけ内側に留めるか(px / %)
+const EDGE_INSET_PX = 8;
+const EDGE_CLAMP_MIN_PCT = 12;
+const EDGE_CLAMP_MAX_PCT = 88;
+
+function clampPct(value: number): number {
+  return Math.min(EDGE_CLAMP_MAX_PCT, Math.max(EDGE_CLAMP_MIN_PCT, value));
 }
 
 export function CameraAR() {
@@ -92,6 +101,7 @@ export function CameraAR() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [started, setStarted] = useState(false);
   const [camError, setCamError] = useState<string | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
   const [viewport, setViewport] = useState(() => ({
     w: typeof window !== 'undefined' ? window.innerWidth : 360,
     h: typeof window !== 'undefined' ? window.innerHeight : 640,
@@ -113,8 +123,9 @@ export function CameraAR() {
   const fovVDeg = (2 * Math.atan(Math.tan(fovHRad / 2) / aspect) * 180) / Math.PI;
 
   const { locations, connected } = useSocket();
-  const { position, error: posError, calibration, startStaticCalibration } = useLivePosition(started);
   const { orientation, requestPermission } = useLiveOrientation(started);
+  const { position, error: posError, calibration, isIndoorMode, startStaticCalibration } =
+    useLivePosition(started, orientation.heading);
 
   const allCount = Object.keys(locations).length;
   const accuracyInfo = getAccuracyInfo(position?.accuracy ?? null);
@@ -183,6 +194,15 @@ export function CameraAR() {
     (t) => Math.abs(t.rel) > CAMERA_FOV_DEG / 2 || Math.abs(t.verticalDeg) > fovVDeg / 2,
   );
 
+  // ユーザーが対処できる警告のみを優先度順に並べ、先頭の1件だけをトーストで表示する
+  const activeWarning: string | null =
+    camError ??
+    posError ??
+    (allCount === 0 ? 'サーバーにデータなし。別の端末/タブで位置送信ボタンを押してください' : null) ??
+    (targets.length > 0 && orientation.heading === null
+      ? '方位センサー待ち。スマホを8の字に振ってください'
+      : null);
+
   return (
     <div className="fixed inset-0 bg-black text-white overflow-hidden">
       {/* カメラ映像 */}
@@ -195,7 +215,7 @@ export function CameraAR() {
 
       {!started && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 bg-slate-900/90 p-6">
-          <h1 className="text-2xl font-bold text-red-400">AR wallhack モード</h1>
+          <h1 className="text-2xl font-bold text-red-400">PinPoint ARモード</h1>
           <p className="text-slate-300 text-sm text-center max-w-xs">
             カメラ・位置情報・方位センサーを使用します。<br />
             許可ダイアログが表示されます。
@@ -245,147 +265,169 @@ export function CameraAR() {
             );
           })}
 
-          {/* 画面外の矢印（端に表示） */}
-          {offScreen.map(({ user, dist, rel }) => {
-            const isLeft = rel < 0;
+          {/* 画面外のターゲット：視線方向に応じて画面端にピン留めした赤枠ボックス + 矢印 + 距離 */}
+          {offScreen.map(({ user, dist, rel, verticalDeg }) => {
+            // 水平・垂直どちらの方向により大きく外れているかで、ピンを左右端/上下端どちらに置くか決める
+            const horizontalOverflow = Math.abs(rel) - CAMERA_FOV_DEG / 2;
+            const verticalOverflow = Math.abs(verticalDeg) - fovVDeg / 2;
+            const pinOnEdge: 'left' | 'right' | 'top' | 'bottom' =
+              horizontalOverflow >= verticalOverflow
+                ? rel < 0
+                  ? 'left'
+                  : 'right'
+                : verticalDeg > 0
+                  ? 'top'
+                  : 'bottom';
+
+            const arrow = { left: '◀', right: '▶', top: '▲', bottom: '▼' }[pinOnEdge];
+            const style: React.CSSProperties =
+              pinOnEdge === 'left' || pinOnEdge === 'right'
+                ? {
+                    [pinOnEdge]: `${EDGE_INSET_PX}px`,
+                    top: `${clampPct(50 - (verticalDeg / fovVDeg) * 100)}%`,
+                    transform: 'translateY(-50%)',
+                  }
+                : {
+                    [pinOnEdge]: `${EDGE_INSET_PX}px`,
+                    left: `${clampPct(((rel + CAMERA_FOV_DEG / 2) / CAMERA_FOV_DEG) * 100)}%`,
+                    transform: 'translateX(-50%)',
+                  };
+
             return (
               <div
                 key={user.userId}
-                className="absolute top-1/2 -translate-y-1/2 bg-orange-600/90 px-2 py-1 rounded text-xs font-mono pointer-events-none"
-                style={{ [isLeft ? 'left' : 'right']: '8px' } as React.CSSProperties}
+                className="absolute flex flex-col items-center gap-1 pointer-events-none"
+                style={style}
               >
-                {isLeft ? '◀' : '▶'} {user.userId.slice(0, 6)} · {dist.toFixed(0)}m
+                <div className="flex h-14 w-14 animate-pulse items-center justify-center rounded-sm border-2 border-red-500 bg-red-500/20 text-xl text-red-300 shadow-[0_0_10px_rgba(239,68,68,0.9)]">
+                  {arrow}
+                </div>
+                <div className="whitespace-nowrap rounded bg-red-600/90 px-1.5 py-0.5 text-[10px] font-mono">
+                  {dist.toFixed(0)}m
+                </div>
               </div>
             );
           })}
 
-          {/* HUD 情報 */}
-          <div className="absolute top-2 left-2 right-2 flex justify-between text-xs font-mono bg-black/50 px-2 py-1 rounded">
-            <div>
-              {position ? (
-                <>
-                  {position.lat.toFixed(5)}, {position.lng.toFixed(5)}
-                  <span className={position.accuracy < 30 ? 'text-green-400' : 'text-yellow-400'}> ±{position.accuracy.toFixed(0)}m</span>
-                </>
-              ) : (
-                <span className="text-yellow-400">位置取得中...</span>
-              )}
-            </div>
-            <div>
-              {orientation.heading !== null ? (
-                <>方位 {orientation.heading.toFixed(0)}° / 仰俯 {cameraPitchDeg.toFixed(0)}°</>
-              ) : (
-                <span className="text-yellow-400">方位取得中...</span>
-              )}
-            </div>
-          </div>
-
-          <div className="absolute top-12 left-2 right-2 rounded-2xl border border-white/10 bg-black/65 p-3 text-xs shadow-2xl backdrop-blur">
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <div>
-                <div className="text-[11px] uppercase tracking-[0.18em] text-slate-400">Location precision</div>
-                <div className="mt-0.5 flex items-baseline gap-2">
-                  <span className={`text-lg font-bold ${accuracyTextClass(accuracyInfo.level)}`}>
-                    {accuracyInfo.label}
-                  </span>
-                  <span className="font-mono text-slate-200">
-                    {position ? `±${position.accuracy.toFixed(1)}m` : '--'}
-                  </span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={startStaticCalibration}
-                disabled={!position || isCalibrating}
-                className="rounded-xl bg-cyan-500 px-3 py-2 text-[11px] font-bold text-slate-950 transition hover:bg-cyan-300 disabled:bg-slate-700 disabled:text-slate-400"
-              >
-                {isCalibrating ? '計測中...' : '静止補正'}
-              </button>
-            </div>
-
-            <div className="h-2 overflow-hidden rounded-full bg-white/10">
-              <div
-                className={`h-full rounded-full transition-all duration-500 ${accuracyBarClass(accuracyInfo.level)}`}
-                style={{ width: `${accuracyInfo.score}%` }}
-              />
-            </div>
-            <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-slate-300">
-              <span>{accuracyInfo.hint}</span>
-              {position?.speed !== null && position?.speed !== undefined && (
-                <span className="font-mono">{position.speed.toFixed(1)}m/s</span>
-              )}
-            </div>
-
-            {calibration.status !== 'idle' && (
-              <div className="mt-3 rounded-xl bg-white/10 p-2">
-                <div className="mb-1 flex items-center justify-between gap-2">
-                  <span
-                    className={
-                      calibration.status === 'success'
-                        ? 'font-bold text-emerald-300'
-                        : calibration.status === 'failed'
-                          ? 'font-bold text-red-300'
-                          : 'font-bold text-cyan-300'
-                    }
-                  >
-                    静止キャリブレーション
-                  </span>
-                  <span className="font-mono text-slate-300">
-                    {Math.round(calibration.progress * 100)}%
-                  </span>
-                </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
-                  <div
-                    className={`h-full rounded-full transition-all duration-300 ${
-                      calibration.status === 'failed' ? 'bg-red-400' : 'bg-cyan-300'
-                    }`}
-                    style={{ width: `${calibration.progress * 100}%` }}
-                  />
-                </div>
-                <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-slate-300">
-                  <span>{calibration.message}</span>
-                  <span className="font-mono">
-                    n={calibration.sampleCount}
-                    {calibration.accuracy !== null ? ` / ±${calibration.accuracy.toFixed(1)}m` : ''}
-                    {calibration.spreadMeters !== null ? ` / spread ${calibration.spreadMeters.toFixed(1)}m` : ''}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="absolute bottom-2 left-2 right-2 flex flex-col gap-1 text-xs font-mono bg-black/50 px-2 py-1 rounded">
-            <div className="flex justify-between">
-              <div>
-                <span className={connected ? 'text-green-400' : 'text-red-400'}>
-                  {connected ? '●' : '○'} WS
+          {/* コンパクトHUD: 精度チップ + 静止補正ボタンの1行のみをデフォルト表示 */}
+          <div className="absolute top-2 left-2 right-2 flex items-center gap-2">
+            <div
+              className={`flex items-center gap-1.5 rounded-full bg-black/60 px-3 py-1.5 text-xs font-bold backdrop-blur ${accuracyTextClass(accuracyInfo.level)}`}
+            >
+              <span className={`inline-block h-2 w-2 rounded-full ${accuracyBarClass(accuracyInfo.level)}`} />
+              <span>{accuracyInfo.label}</span>
+              <span className="font-mono text-slate-200">
+                {position ? `±${position.accuracy.toFixed(0)}m` : '--'}
+              </span>
+              {isIndoorMode && (
+                <span className="rounded bg-indigo-500/80 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                  屋内推定
                 </span>
-                {' · '}
-                サーバーから: {allCount}件
-                {' · '}
-                自分以外: {targets.length}人
-                {' · '}
-                画面内: {onScreen.length}
-              </div>
-              <div>FOV {CAMERA_FOV_DEG}°H / {fovVDeg.toFixed(0)}°V</div>
+              )}
             </div>
-            {allCount === 0 && (
-              <div className="text-yellow-300">
-                ⚠ サーバーにデータなし。別の端末/タブで位置送信ボタンを押してください
-              </div>
-            )}
-            {allCount > 0 && targets.length === 0 && (
-              <div className="text-yellow-300">
-                ⚠ 登録されているのは自分自身のみ（myId={myUserId.slice(0, 6)}）
-              </div>
-            )}
-            {targets.length > 0 && !position && (
-              <div className="text-yellow-300">⚠ 位置取得待ち</div>
-            )}
-            {targets.length > 0 && orientation.heading === null && (
-              <div className="text-yellow-300">⚠ 方位センサー取得待ち（スマホを8の字に振ってください）</div>
-            )}
+            <button
+              type="button"
+              onClick={startStaticCalibration}
+              disabled={!position || isCalibrating}
+              className="ml-auto rounded-xl bg-cyan-500 px-3 py-2 text-[11px] font-bold text-slate-950 shadow transition hover:bg-cyan-300 disabled:bg-slate-700 disabled:text-slate-400"
+            >
+              {isCalibrating ? '計測中...' : '静止補正'}
+            </button>
           </div>
+
+          {/* キャリブレーション実行中のみ、詳細な進捗を表示 */}
+          {calibration.status !== 'idle' && (
+            <div className="absolute top-12 left-2 right-2 rounded-2xl border border-white/10 bg-black/65 p-3 text-xs shadow-2xl backdrop-blur">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span
+                  className={
+                    calibration.status === 'success'
+                      ? 'font-bold text-emerald-300'
+                      : calibration.status === 'failed'
+                        ? 'font-bold text-red-300'
+                        : 'font-bold text-cyan-300'
+                  }
+                >
+                  静止キャリブレーション
+                </span>
+                <span className="font-mono text-slate-300">
+                  {Math.round(calibration.progress * 100)}%
+                </span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    calibration.status === 'failed' ? 'bg-red-400' : 'bg-cyan-300'
+                  }`}
+                  style={{ width: `${calibration.progress * 100}%` }}
+                />
+              </div>
+              <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-slate-300">
+                <span>{calibration.message}</span>
+                <span className="font-mono">
+                  n={calibration.sampleCount}
+                  {calibration.accuracy !== null ? ` / ±${calibration.accuracy.toFixed(1)}m` : ''}
+                  {calibration.spreadMeters !== null ? ` / spread ${calibration.spreadMeters.toFixed(1)}m` : ''}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* 検出人数バッジ（常時表示） */}
+          <div className="absolute bottom-3 left-3 rounded-full bg-black/60 px-3 py-1.5 text-xs font-bold backdrop-blur">
+            🔍 検出: {targets.length}人
+          </div>
+
+          {/* 詳細情報の開閉ボタン */}
+          <button
+            type="button"
+            onClick={() => setShowDetails((v) => !v)}
+            className="absolute bottom-3 right-3 flex h-8 w-8 items-center justify-center rounded-full bg-black/60 text-sm font-bold backdrop-blur"
+            aria-label="詳細情報を表示"
+          >
+            ⓘ
+          </button>
+
+          {/* 開発者向け詳細パネル（ⓘボタンで開閉） */}
+          {showDetails && (
+            <div className="absolute bottom-14 right-3 left-3 rounded-2xl border border-white/10 bg-black/75 p-3 text-xs font-mono shadow-2xl backdrop-blur">
+              <div className="mb-1">
+                {position ? (
+                  <>
+                    {position.lat.toFixed(5)}, {position.lng.toFixed(5)}
+                    <span className="ml-2 text-slate-300">
+                      {position.altitude !== null
+                        ? `alt ${position.altitude.toFixed(1)}m ±${(position.altitudeAccuracy ?? 0).toFixed(0)}m`
+                        : 'alt --'}
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-yellow-400">位置取得中...</span>
+                )}
+              </div>
+              <div className="mb-2">
+                {orientation.heading !== null ? (
+                  <>方位 {orientation.heading.toFixed(0)}° / 仰俯 {cameraPitchDeg.toFixed(0)}°</>
+                ) : (
+                  <span className="text-yellow-400">方位取得中...</span>
+                )}
+              </div>
+              <div className="flex justify-between border-t border-white/10 pt-2">
+                <div>
+                  <span className={connected ? 'text-green-400' : 'text-red-400'}>
+                    {connected ? '●' : '○'} WS
+                  </span>
+                  {' · '}
+                  サーバーから: {allCount}件
+                  {' · '}
+                  自分以外: {targets.length}人
+                  {' · '}
+                  画面内: {onScreen.length}
+                </div>
+                <div>FOV {CAMERA_FOV_DEG}°H / {fovVDeg.toFixed(0)}°V</div>
+              </div>
+            </div>
+          )}
 
           {/* 中央の十字 */}
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
@@ -393,9 +435,10 @@ export function CameraAR() {
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[2px] h-6 bg-white/70" />
           </div>
 
-          {(camError || posError) && (
-            <div className="absolute top-10 left-2 right-2 bg-red-900/80 px-2 py-1 rounded text-xs">
-              {camError || posError}
+          {/* ユーザーが対処できる警告のみ、1件ずつトースト風に表示 */}
+          {activeWarning && (
+            <div className="absolute bottom-14 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-yellow-900/90 px-4 py-2 text-xs font-bold text-yellow-200 shadow-lg">
+              ⚠ {activeWarning}
             </div>
           )}
         </>

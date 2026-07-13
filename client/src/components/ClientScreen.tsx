@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useGPS } from '../hooks/useGPS';
 import { useOrientation } from '../hooks/useOrientation';
 import { useSocket } from '../hooks/useSocket';
@@ -43,8 +44,10 @@ export function ClientScreen() {
   const { connected, sendLocation } = useSocket();
   const gps = useGPS();
   const orientation = useOrientation();
+  // 開発者向け診断情報(方式/n=/考慮シグナル等)はデフォルト非表示にし、「詳細」で開閉する
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
-  const userId = localStorage.getItem('disaster_ar_user_id') ?? '（未生成）';
+  const userId = localStorage.getItem('pinpoint_user_id') ?? '（未生成）';
   const maskedId = userId.slice(0, 8) + '...';
 
   async function handleGPS() {
@@ -80,7 +83,7 @@ export function ClientScreen() {
   return (
     <div className="min-h-screen bg-slate-900 text-white flex flex-col items-center justify-center p-6 gap-8">
       <div className="text-center">
-        <h1 className="text-2xl font-bold text-blue-400 mb-1">災害AR救助システム</h1>
+        <h1 className="text-2xl font-bold text-blue-400 mb-1">PinPoint</h1>
         <p className="text-slate-400 text-sm">位置情報送信パネル</p>
       </div>
 
@@ -112,7 +115,7 @@ export function ClientScreen() {
               精度: ±{gps.accuracy.toFixed(0)}m
             </span>
           )}
-          <DiagnosticsText diagnostics={gps.diagnostics} />
+          {showDiagnostics && <DiagnosticsText diagnostics={gps.diagnostics} />}
         </div>
       </div>
 
@@ -137,9 +140,26 @@ export function ClientScreen() {
               精度: ±{orientation.accuracy.toFixed(0)}m
             </span>
           )}
-          <DiagnosticsText diagnostics={orientation.diagnostics} />
+          {showDiagnostics && <DiagnosticsText diagnostics={orientation.diagnostics} />}
         </div>
       </div>
+
+      {/* 詳細診断情報の開閉 */}
+      <button
+        type="button"
+        onClick={() => setShowDiagnostics((v) => !v)}
+        className="text-xs text-slate-500 underline underline-offset-2 hover:text-slate-300"
+      >
+        {showDiagnostics ? '詳細を隠す' : '詳細を表示'}
+      </button>
+
+      {/* ARカメラへのリンク */}
+      <a
+        href="/camera"
+        className="w-full max-w-sm py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-center text-slate-200 font-semibold transition-colors"
+      >
+        📷 ARカメラを開く
+      </a>
 
       {/* userID表示 */}
       <div className="text-center">

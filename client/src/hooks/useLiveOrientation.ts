@@ -19,7 +19,16 @@ export function useLiveOrientation(enabled: boolean) {
     };
     if (typeof DoE.requestPermission === 'function') {
       const result = await DoE.requestPermission();
-      return result === 'granted';
+      if (result !== 'granted') return false;
+    }
+
+    // 歩数検出(PDR)用に加速度センサーの許可も必要 (iOS)
+    const DmE = (window as unknown as {
+      DeviceMotionEvent?: { requestPermission?: () => Promise<string> };
+    }).DeviceMotionEvent;
+    if (DmE && typeof DmE.requestPermission === 'function') {
+      const result = await DmE.requestPermission();
+      if (result !== 'granted') return false;
     }
     return true;
   }, []);

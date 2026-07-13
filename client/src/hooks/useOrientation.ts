@@ -3,10 +3,10 @@ import { LocationDiagnostics, WorldCoordPayload, SendStatus } from '../types';
 import { collectHybridLocation } from '../utils/positioning';
 
 function getUserId(): string {
-  const stored = localStorage.getItem('disaster_ar_user_id');
+  const stored = localStorage.getItem('pinpoint_user_id');
   if (stored) return stored;
   const id = crypto.randomUUID();
-  localStorage.setItem('disaster_ar_user_id', id);
+  localStorage.setItem('pinpoint_user_id', id);
   return id;
 }
 
@@ -82,6 +82,7 @@ export function useOrientation() {
         lat: sample.lat,
         lng: sample.lng,
         altitude: sample.altitude,
+        altitudeAccuracy: sample.altitudeAccuracy,
         accuracy: sample.accuracy,
         alpha,
         beta,

@@ -1,4 +1,6 @@
-# 災害AR救助システム - Phase 1
+# PinPoint - 災害AR救助システム
+
+本番: https://pinpoint.seizavl.workers.dev
 
 ## 起動方法
 
@@ -22,15 +24,25 @@ npm run dev
 | http://localhost:5173/ | 被災者用（スマホで開く）|
 | http://localhost:5173/admin | 管理者マップ |
 
-## 本番デプロイ
+## 本番デプロイ（Cloudflare Workers）
 
-### サーバー（Railway）
-1. `server/` をRailwayにデプロイ
-2. 環境変数 `CLIENT_ORIGIN` にVercelのURLを設定
+クライアント(静的アセット)とWebSocketサーバー(Durable Objects)を同一オリジンの
+1つのWorkerとして配信するため、`VITE_SERVER_URL` などの環境変数設定は不要。
 
-### クライアント（Vercel）
-1. `client/` をVercelにデプロイ
-2. 環境変数 `VITE_SERVER_URL` にRailwayのURLを設定
+```bash
+cd client && npm run build      # client/dist を生成
+cd ../worker && npm install && npx wrangler deploy
+```
+
+- `worker/wrangler.jsonc` の `assets.directory` が `../client/dist` を指しており、
+  Workerが静的ファイルの配信とWebSocket(`/ws`)の両方を担う。
+- `/admin` や `/camera` などのSPAルーティングは `not_found_handling: "single-page-application"` で対応。
+- ローカルでWorkerを試す場合は `cd worker && npm run dev` (http://localhost:8787)。
+  クライアントの `npm run dev` はViteの `/ws` proxy経由でこれに接続する。
+
+### server/ について
+`server/`（Express + socket.io）はローカル開発用のレガシー実装として残しているが、
+本番のデプロイ先は Cloudflare Workers (`worker/`) に統一した。
 
 ## Phase 1 完了条件チェック
 - [x] 統合位置ボタン送信（GPS + Wi-Fi/モバイル網補完） → 管理者マップに青ピン

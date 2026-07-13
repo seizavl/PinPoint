@@ -3,12 +3,15 @@ import {
   appendGeoSample,
   distanceMeters,
   extractGeoSample,
+  fromLocalMeters,
   fuseGeoSamples,
   GeoSample,
   GeoSampleSource,
   isLikelyOutlier,
   projectPosition,
+  toLocalMeters,
 } from '../utils/locationFusion';
+import { StepDetector } from '../utils/stepDetector';
 
 export type LivePosition = GeoSample;
 
@@ -31,14 +34,35 @@ const MAX_REASONABLE_SPEED_MPS = 15;
 const MAX_PREDICTION_SECONDS = 1.5;
 const MAX_PREDICTION_DISTANCE_M = 10;
 const MIN_PREDICTION_SPEED_MPS = 0.8;
-const PREDICTION_INTERVAL_MS = 100;
+// カメラ側の位置更新周期: 1秒に1回
+const PUBLISH_INTERVAL_MS = 1000;
+// この精度(m)より悪いGPSフィックスは「室内品質」とみなし、PDRを優先する
+const INDOOR_ACCURACY_M = 30;
+// この精度(m)以下なら良好なGPSとみなし、屋内モードを解除する
+const GOOD_GPS_ACCURACY_M = 25;
+// 良好なGPSがこの時間(ms)途絶えたら屋内モードと判定
+const INDOOR_MODE_TIMEOUT_MS = 10000;
+// PDR中の精度上限 (これ以上は悪化させない、水平カルマンの分散上限として使用)
+const PDR_MAX_ACCURACY_M = 40;
+// PDR1歩あたりに水平カルマンの分散へ加算する係数 (歩幅[m] × この値 = 分散[m^2])
+const PDR_STEP_VARIANCE_COEFF = 0.3;
+// 水平カルマンフィルタ: 速度に応じたプロセスノイズ係数。毎秒 (max(speed, 下限) × この値)^2 を分散に加算
+const HORIZONTAL_SPEED_NOISE_COEFF = 1.5;
+// 水平カルマンフィルタ: プロセスノイズ計算で使う速度の下限 (静止時のドリフトを確保する)
+const HORIZONTAL_MIN_NOISE_SPEED_MPS = 0.5;
+// 室内品質GPSで「歩いていないのに飛んだ」ジャンプを検知した際の観測ノイズ倍率
+const INDOOR_JUMP_NOISE_MULTIPLIER = 25;
+// 室内品質GPSでジャンプ判定に満たない場合でも適用する観測ノイズ倍率
+const INDOOR_DEFAULT_NOISE_MULTIPLIER = 4;
+// 高度カルマンフィルタ: 毎秒分散に加算するプロセスノイズ (m^2)
+const ALTITUDE_PROCESS_NOISE_PER_SEC = 0.5;
+// 表示用accuracy/altitudeAccuracyの下限 (m)
+const MIN_DISPLAY_ACCURACY_M = 3;
 const WARM_START_MAX_AGE_MS = 3000;
 const WARM_START_TIMEOUT_MS = 8000;
 const WATCH_TIMEOUT_MS = 20000;
 const NETWORK_MAX_AGE_MS = 15000;
 const NETWORK_WATCH_TIMEOUT_MS = 15000;
-const MIN_ALPHA = 0.16;
-const MAX_ALPHA = 0.82;
 const STATIC_CALIBRATION_DURATION_MS = 6500;
 const STATIC_CALIBRATION_MIN_SAMPLES = 4;
 const STATIC_CALIBRATION_MAX_SPREAD_M = 8;
@@ -58,14 +82,45 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function blendNumber(prev: number, next: number, alpha: number): number {
-  return prev + (next - prev) * alpha;
+// 水平位置(緯度経度)の推定状態。原点(基準点)からの東西/南北メートル座標で位置を持つ
+// 定位置カルマンフィルタ(等方分散を仮定するスカラーP)。
+interface HorizontalKalmanState {
+  originLat: number;
+  originLng: number;
+  east: number;
+  north: number;
+  variance: number;
 }
 
-function blendAltitude(prev: number | null, next: number | null, alpha: number): number | null {
-  if (prev === null) return next;
-  if (next === null) return prev;
-  return blendNumber(prev, next, alpha);
+// 高度の推定状態。1次元スカラーカルマンフィルタ。
+interface AltitudeKalmanState {
+  altitude: number;
+  variance: number;
+}
+
+function initHorizontalKalman(origin: Pick<GeoSample, 'lat' | 'lng'>, accuracy: number): HorizontalKalmanState {
+  return {
+    originLat: origin.lat,
+    originLng: origin.lng,
+    east: 0,
+    north: 0,
+    variance: clamp(accuracy, MIN_DISPLAY_ACCURACY_M, 100) ** 2,
+  };
+}
+
+function initAltitudeKalman(altitude: number, altitudeAccuracy: number | null): AltitudeKalmanState {
+  return {
+    altitude,
+    variance: clamp(altitudeAccuracy ?? 30, MIN_DISPLAY_ACCURACY_M, 100) ** 2,
+  };
+}
+
+// 水平カルマンフィルタの現在の推定位置を緯度経度として取り出す
+function horizontalKalmanLatLng(state: HorizontalKalmanState): { lat: number; lng: number } {
+  return fromLocalMeters(
+    { lat: state.originLat, lng: state.originLng },
+    { east: state.east, north: state.north },
+  );
 }
 
 function estimateMotion(next: LivePosition, speedFromStep: number): MotionEstimate {
@@ -97,10 +152,11 @@ function predictPosition(base: LivePosition, motion: MotionEstimate | null, now:
   };
 }
 
-export function useLivePosition(enabled: boolean) {
+export function useLivePosition(enabled: boolean, headingDeg: number | null = null) {
   const [position, setPosition] = useState<LivePosition | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [calibration, setCalibration] = useState<StaticCalibrationState>(IDLE_CALIBRATION);
+  const [isIndoorMode, setIsIndoorMode] = useState(false);
   const acceptedRef = useRef<LivePosition | null>(null);
   const smoothedRef = useRef<LivePosition | null>(null);
   const displayedRef = useRef<LivePosition | null>(null);
@@ -109,6 +165,16 @@ export function useLivePosition(enabled: boolean) {
   const calibrationRef = useRef<StaticCalibrationState>(IDLE_CALIBRATION);
   const calibrationSamplesRef = useRef<GeoSample[]>([]);
   const calibrationStartedAtRef = useRef<number | null>(null);
+  const headingRef = useRef<number | null>(null);
+  const walkedSinceBlendRef = useRef(0);
+  const lastStepAtRef = useRef(0);
+  const lastGoodGpsAtRef = useRef(0);
+  const horizontalKalmanRef = useRef<HorizontalKalmanState | null>(null);
+  const altitudeKalmanRef = useRef<AltitudeKalmanState | null>(null);
+
+  useEffect(() => {
+    headingRef.current = headingDeg;
+  }, [headingDeg]);
 
   const setCalibrationSnapshot = useCallback((next: StaticCalibrationState) => {
     calibrationRef.current = next;
@@ -143,7 +209,13 @@ export function useLivePosition(enabled: boolean) {
     samplesRef.current = [];
     calibrationSamplesRef.current = [];
     calibrationStartedAtRef.current = null;
+    walkedSinceBlendRef.current = 0;
+    lastStepAtRef.current = 0;
+    lastGoodGpsAtRef.current = 0;
+    horizontalKalmanRef.current = null;
+    altitudeKalmanRef.current = null;
     setCalibrationSnapshot(IDLE_CALIBRATION);
+    setIsIndoorMode(false);
     setPosition(null);
     setError(null);
 
@@ -152,6 +224,12 @@ export function useLivePosition(enabled: boolean) {
       smoothedRef.current = calibrated;
       displayedRef.current = calibrated;
       samplesRef.current = appendGeoSample(samplesRef.current, calibrated, 12000, 8);
+      // 静止キャリブレーション成功時はカルマン状態(原点・分散)をキャリブ値でリセットする
+      horizontalKalmanRef.current = initHorizontalKalman(calibrated, calibrated.accuracy);
+      altitudeKalmanRef.current =
+        calibrated.altitude !== null
+          ? initAltitudeKalman(calibrated.altitude, calibrated.altitudeAccuracy)
+          : null;
       motionRef.current =
         calibrated.heading !== null && calibrated.speed !== null
           ? { speedMps: calibrated.speed, bearingDeg: calibrated.heading }
@@ -245,10 +323,13 @@ export function useLivePosition(enabled: boolean) {
       const fused = fuseGeoSamples(samplesRef.current).sample;
       updateStaticCalibration(candidate);
 
-      if (!prevAccepted || !prevSmoothed) {
+      if (!prevAccepted || !prevSmoothed || !horizontalKalmanRef.current) {
         acceptedRef.current = fused;
         smoothedRef.current = fused;
         displayedRef.current = fused;
+        horizontalKalmanRef.current = initHorizontalKalman(fused, fused.accuracy);
+        altitudeKalmanRef.current =
+          fused.altitude !== null ? initAltitudeKalman(fused.altitude, fused.altitudeAccuracy) : null;
         motionRef.current =
           fused.heading !== null && fused.speed !== null
             ? { speedMps: fused.speed, bearingDeg: fused.heading }
@@ -258,24 +339,72 @@ export function useLivePosition(enabled: boolean) {
         return;
       }
 
+      if (fused.accuracy <= GOOD_GPS_ACCURACY_M) {
+        lastGoodGpsAtRef.current = Date.now();
+      }
+
+      const horizontalKalman = horizontalKalmanRef.current;
       const dtSec = Math.max((fused.timestamp - prevSmoothed.timestamp) / 1000, 0.001);
-      const fusedJumpMeters = distanceMeters(prevSmoothed, fused);
+      const prevFilterLatLng = horizontalKalmanLatLng(horizontalKalman);
+      const fusedJumpMeters = distanceMeters(prevFilterLatLng, fused);
       const speedFromStep = fusedJumpMeters / dtSec;
-      const isStationary = fused.speed !== null ? fused.speed < 0.8 : speedFromStep < 0.8;
-      const jitterRadiusM = clamp(Math.max(prevSmoothed.accuracy, fused.accuracy) * 0.25, 2.5, 12);
 
-      let alpha = fusedJumpMeters <= jitterRadiusM ? 0.18 : 0.42;
-      if (fused.accuracy <= 8) alpha += 0.22;
-      else if (fused.accuracy <= 15) alpha += 0.14;
-      if (!isStationary) alpha += 0.12;
-      if (fusedJumpMeters > fused.accuracy) alpha += 0.1;
-      alpha = clamp(alpha, MIN_ALPHA, MAX_ALPHA);
+      // --- 水平カルマンフィルタ: 予測(プロセスノイズ加算) ---
+      const noiseSpeed = Math.max(fused.speed ?? speedFromStep, HORIZONTAL_MIN_NOISE_SPEED_MPS);
+      horizontalKalman.variance += (noiseSpeed * HORIZONTAL_SPEED_NOISE_COEFF) ** 2 * dtSec;
 
+      // --- 水平カルマンフィルタ: 観測更新 ---
+      // 室内品質のGPSは「実際に歩いた距離」でゲーティングする:
+      // 歩いていないのに位置が飛ぶのはWi-Fi測位のジッタなので、観測ノイズを大きくしてほぼ無視する。
+      const isPoorFix = fused.accuracy > INDOOR_ACCURACY_M;
+      let measurementVariance = clamp(fused.accuracy, MIN_DISPLAY_ACCURACY_M, 100) ** 2;
+      if (isPoorFix) {
+        const allowedMoveM = walkedSinceBlendRef.current + Math.max(4, fused.accuracy * 0.25);
+        measurementVariance *=
+          fusedJumpMeters > allowedMoveM ? INDOOR_JUMP_NOISE_MULTIPLIER : INDOOR_DEFAULT_NOISE_MULTIPLIER;
+      }
+      walkedSinceBlendRef.current = 0;
+
+      const measured = toLocalMeters(
+        { lat: horizontalKalman.originLat, lng: horizontalKalman.originLng },
+        fused,
+      );
+      const horizontalGain =
+        horizontalKalman.variance / (horizontalKalman.variance + measurementVariance);
+      horizontalKalman.east += horizontalGain * (measured.east - horizontalKalman.east);
+      horizontalKalman.north += horizontalGain * (measured.north - horizontalKalman.north);
+      horizontalKalman.variance *= 1 - horizontalGain;
+
+      // --- 高度カルマンフィルタ: 予測(常時) + 観測更新(altitudeがnullなら予測のみ) ---
+      if (altitudeKalmanRef.current) {
+        altitudeKalmanRef.current.variance += ALTITUDE_PROCESS_NOISE_PER_SEC * dtSec;
+      }
+      if (fused.altitude !== null) {
+        if (!altitudeKalmanRef.current) {
+          altitudeKalmanRef.current = initAltitudeKalman(fused.altitude, fused.altitudeAccuracy);
+        } else {
+          const altitudeKalman = altitudeKalmanRef.current;
+          const altitudeMeasurementVariance = clamp(
+            fused.altitudeAccuracy ?? 30,
+            MIN_DISPLAY_ACCURACY_M,
+            100,
+          ) ** 2;
+          const altitudeGain =
+            altitudeKalman.variance / (altitudeKalman.variance + altitudeMeasurementVariance);
+          altitudeKalman.altitude += altitudeGain * (fused.altitude - altitudeKalman.altitude);
+          altitudeKalman.variance *= 1 - altitudeGain;
+        }
+      }
+
+      const { lat, lng } = horizontalKalmanLatLng(horizontalKalman);
       const smoothed: LivePosition = {
-        lat: blendNumber(prevSmoothed.lat, fused.lat, alpha),
-        lng: blendNumber(prevSmoothed.lng, fused.lng, alpha),
-        altitude: blendAltitude(prevSmoothed.altitude, fused.altitude, alpha),
-        accuracy: blendNumber(prevSmoothed.accuracy, fused.accuracy, isStationary ? 0.22 : 0.35),
+        lat,
+        lng,
+        altitude: altitudeKalmanRef.current?.altitude ?? null,
+        altitudeAccuracy: altitudeKalmanRef.current
+          ? Math.max(MIN_DISPLAY_ACCURACY_M, Math.sqrt(altitudeKalmanRef.current.variance))
+          : null,
+        accuracy: Math.max(MIN_DISPLAY_ACCURACY_M, Math.sqrt(horizontalKalman.variance)),
         timestamp: fused.timestamp,
         speed: fused.speed ?? speedFromStep,
         heading: fused.heading,
@@ -284,12 +413,53 @@ export function useLivePosition(enabled: boolean) {
       acceptedRef.current = fused;
       smoothedRef.current = smoothed;
       motionRef.current = estimateMotion(smoothed, speedFromStep);
-
-      const predictedNow = predictPosition(smoothed, motionRef.current, Date.now());
-      displayedRef.current = predictedNow;
-      setPosition(predictedNow);
       setError(null);
+      // 表示更新は1秒周期のタイマーに任せる
     };
+
+    // --- 歩行者デッドレコニング (PDR): 室内でGPSが使えない間の位置推定 ---
+    const stepDetector = new StepDetector();
+
+    const handleStep = (stepLengthM: number, cadenceHz: number) => {
+      const heading = headingRef.current;
+      const base = smoothedRef.current;
+      const horizontalKalman = horizontalKalmanRef.current;
+      if (heading === null || !base || !horizontalKalman) return;
+
+      // 歩いた分だけカルマン状態(east/north)を進め、分散を歩幅に応じて増やす
+      const projected = projectPosition(base, stepLengthM, heading);
+      const moved = toLocalMeters(
+        { lat: horizontalKalman.originLat, lng: horizontalKalman.originLng },
+        projected,
+      );
+      horizontalKalman.east = moved.east;
+      horizontalKalman.north = moved.north;
+      horizontalKalman.variance = Math.min(
+        horizontalKalman.variance + stepLengthM * PDR_STEP_VARIANCE_COEFF,
+        Math.max(horizontalKalman.variance, PDR_MAX_ACCURACY_M ** 2),
+      );
+
+      const next: LivePosition = {
+        ...projected,
+        accuracy: Math.max(MIN_DISPLAY_ACCURACY_M, Math.sqrt(horizontalKalman.variance)),
+        timestamp: Date.now(),
+        speed: clamp(stepLengthM * cadenceHz, 0, MAX_REASONABLE_SPEED_MPS),
+        heading,
+      };
+
+      smoothedRef.current = next;
+      walkedSinceBlendRef.current += stepLengthM;
+      lastStepAtRef.current = Date.now();
+    };
+
+    const handleMotion = (e: DeviceMotionEvent) => {
+      const acc = e.accelerationIncludingGravity;
+      if (!acc || acc.x === null || acc.y === null || acc.z === null) return;
+      const step = stepDetector.process(acc.x, acc.y, acc.z, performance.now());
+      if (step) handleStep(step.stepLengthM, step.cadenceHz);
+    };
+
+    window.addEventListener('devicemotion', handleMotion);
 
     const handleError = (err: GeolocationPositionError) => {
       if (err.code === err.PERMISSION_DENIED || !hasAnyFix) {
@@ -323,6 +493,7 @@ export function useLivePosition(enabled: boolean) {
     ];
 
     return () => {
+      window.removeEventListener('devicemotion', handleMotion);
       for (const watchId of watchIds) {
         navigator.geolocation.clearWatch(watchId);
       }
@@ -333,27 +504,33 @@ export function useLivePosition(enabled: boolean) {
       samplesRef.current = [];
       calibrationSamplesRef.current = [];
       calibrationStartedAtRef.current = null;
+      horizontalKalmanRef.current = null;
+      altitudeKalmanRef.current = null;
     };
   }, [enabled, setCalibrationSnapshot]);
 
   useEffect(() => {
     if (!enabled) return;
 
+    // 1秒に1回、最新の推定位置(GPS融合 + PDR)を発行する
     const timerId = window.setInterval(() => {
+      const now = Date.now();
       const base = smoothedRef.current;
       if (!base) return;
 
-      const next = predictPosition(base, motionRef.current, Date.now());
-      const prevDisplayed = displayedRef.current;
-
-      if (prevDisplayed && distanceMeters(prevDisplayed, next) < 0.25) return;
+      // 直近に歩行ステップで動かした場合はGPS速度による外挿と二重計上しない
+      const steppedRecently = now - lastStepAtRef.current < 2000;
+      const next = steppedRecently ? base : predictPosition(base, motionRef.current, now);
 
       displayedRef.current = next;
       setPosition(next);
-    }, PREDICTION_INTERVAL_MS);
+      setIsIndoorMode(
+        lastGoodGpsAtRef.current === 0 || now - lastGoodGpsAtRef.current > INDOOR_MODE_TIMEOUT_MS,
+      );
+    }, PUBLISH_INTERVAL_MS);
 
     return () => window.clearInterval(timerId);
   }, [enabled]);
 
-  return { position, error, calibration, startStaticCalibration };
+  return { position, error, calibration, isIndoorMode, startStaticCalibration };
 }

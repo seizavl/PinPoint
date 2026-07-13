@@ -100,7 +100,7 @@ export function AdminMap() {
           <span
             className={`w-3 h-3 rounded-full ${connected ? 'bg-green-400' : 'bg-red-500 animate-pulse'}`}
           />
-          <span className="text-white font-bold text-sm">災害AR 管理者マップ</span>
+          <span className="text-white font-bold text-sm">PinPoint 管理者マップ</span>
         </div>
         <div className="flex items-center gap-4 text-sm text-slate-300">
           <span>被災者数: <strong className="text-white">{entries.length}</strong></span>

@@ -5,7 +5,8 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const PROXY_TARGET = env.VITE_PROXY_TARGET ?? 'http://localhost:3001';
+  // wrangler dev (Cloudflare Workers ローカル実行) の既定ポートに接続
+  const PROXY_TARGET = env.VITE_PROXY_TARGET ?? 'http://localhost:8787';
   return {
     plugins: [
       react(),
@@ -14,8 +15,8 @@ export default defineConfig(({ mode }) => {
         registerType: 'autoUpdate',
         includeAssets: ['favicon.ico'],
         manifest: {
-          name: '災害AR救助システム',
-          short_name: '災害AR',
+          name: 'PinPoint',
+          short_name: 'PinPoint',
           description: '地震発生時の被災者位置共有システム',
           theme_color: '#1e40af',
           background_color: '#0f172a',
@@ -32,7 +33,7 @@ export default defineConfig(({ mode }) => {
       host: true,
       https: true,
       proxy: {
-        '/socket.io': {
+        '/ws': {
           target: PROXY_TARGET,
           ws: true,
           changeOrigin: true,

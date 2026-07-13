@@ -4,11 +4,18 @@ export interface GeoSample {
   lat: number;
   lng: number;
   altitude: number | null;
+  altitudeAccuracy: number | null;
   accuracy: number;
   timestamp: number;
   speed: number | null;
   heading: number | null;
   source?: GeoSampleSource;
+}
+
+// 局所平面(接平面)上のメートル座標。カルマンフィルタなど平面近似の状態表現に使う。
+export interface LocalMeters {
+  east: number;
+  north: number;
 }
 
 export interface GeoFusionResult {
@@ -44,6 +51,13 @@ export function sanitizeHeading(heading: number | null): number | null {
   return (heading % 360 + 360) % 360;
 }
 
+export function sanitizeAltitudeAccuracy(altitudeAccuracy: number | null | undefined): number | null {
+  if (typeof altitudeAccuracy !== 'number' || !Number.isFinite(altitudeAccuracy) || altitudeAccuracy < 0) {
+    return null;
+  }
+  return altitudeAccuracy;
+}
+
 export function extractGeoSample(
   position: GeolocationPosition,
   source: GeoSampleSource = 'gps',
@@ -52,11 +66,41 @@ export function extractGeoSample(
     lat: position.coords.latitude,
     lng: position.coords.longitude,
     altitude: position.coords.altitude,
+    altitudeAccuracy: sanitizeAltitudeAccuracy(position.coords.altitudeAccuracy),
     accuracy: position.coords.accuracy,
     timestamp: position.timestamp,
     speed: sanitizeSpeed(position.coords.speed),
     heading: sanitizeHeading(position.coords.heading),
     source,
+  };
+}
+
+// 緯度経度を、原点(origin)を基準とした局所平面のメートル座標(東西/南北)に変換する。
+// distanceMeters と同じ equirectangular 近似(原点の緯度でスケール)を用いる。
+export function toLocalMeters(
+  origin: Pick<GeoSample, 'lat' | 'lng'>,
+  point: Pick<GeoSample, 'lat' | 'lng'>,
+): LocalMeters {
+  const lat1 = toRad(origin.lat);
+  const dLat = toRad(point.lat - origin.lat);
+  const dLng = toRad(point.lng - origin.lng);
+  return {
+    east: dLng * Math.cos(lat1) * EARTH_RADIUS_M,
+    north: dLat * EARTH_RADIUS_M,
+  };
+}
+
+// toLocalMeters の逆変換。局所平面座標を緯度経度に戻す。
+export function fromLocalMeters(
+  origin: Pick<GeoSample, 'lat' | 'lng'>,
+  local: LocalMeters,
+): { lat: number; lng: number } {
+  const lat1 = toRad(origin.lat);
+  const dLat = local.north / EARTH_RADIUS_M;
+  const dLng = local.east / (EARTH_RADIUS_M * Math.cos(lat1));
+  return {
+    lat: origin.lat + toDeg(dLat),
+    lng: origin.lng + toDeg(dLng),
   };
 }
 
@@ -199,6 +243,7 @@ export function fuseGeoSamples(samples: GeoSample[]): GeoFusionResult {
   let lngSum = 0;
   let altitudeSum = 0;
   let altitudeWeightSum = 0;
+  let bestAltitudeAccuracy: number | null = null;
   let speedSum = 0;
   let speedWeightSum = 0;
   const bestAccuracy = Math.min(...cluster.map((sample) => sample.accuracy));
@@ -213,8 +258,16 @@ export function fuseGeoSamples(samples: GeoSample[]): GeoFusionResult {
     lngSum += sample.lng * weight;
 
     if (sample.altitude !== null) {
-      altitudeSum += sample.altitude * weight;
-      altitudeWeightSum += weight;
+      // 高度はaltitudeAccuracyによる重み付け(不明なら30mとみなす)で融合する
+      const altitudeWeight = (1 / clamp(sample.altitudeAccuracy ?? 30, 3, 100) ** 2) * recencyWeight;
+      altitudeSum += sample.altitude * altitudeWeight;
+      altitudeWeightSum += altitudeWeight;
+      if (sample.altitudeAccuracy !== null) {
+        bestAltitudeAccuracy =
+          bestAltitudeAccuracy === null
+            ? sample.altitudeAccuracy
+            : Math.min(bestAltitudeAccuracy, sample.altitudeAccuracy);
+      }
     }
 
     if (sample.speed !== null) {
@@ -227,6 +280,7 @@ export function fuseGeoSamples(samples: GeoSample[]): GeoFusionResult {
     lat: latSum / weightSum,
     lng: lngSum / weightSum,
     altitude: altitudeWeightSum > 0 ? altitudeSum / altitudeWeightSum : anchor.altitude,
+    altitudeAccuracy: altitudeWeightSum > 0 ? bestAltitudeAccuracy : anchor.altitudeAccuracy,
     accuracy: bestAccuracy,
     timestamp: newestTimestamp,
     speed: speedWeightSum > 0 ? speedSum / speedWeightSum : anchor.speed,
