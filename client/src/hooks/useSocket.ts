@@ -28,6 +28,22 @@ console.log('[socket] connecting to:', WS_URL);
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 10000;
 
+// WS接続失敗の調査用: 失敗内容をサーバーログへ送る(セッションあたり最大数回)
+let debugReportsLeft = 5;
+function reportWsDebug(info: Record<string, unknown>): void {
+  if (debugReportsLeft <= 0) return;
+  debugReportsLeft -= 1;
+  try {
+    void fetch('/api/client-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...info, url: WS_URL, ua: navigator.userAgent.slice(0, 120) }),
+    });
+  } catch {
+    // 診断用なので失敗しても何もしない
+  }
+}
+
 export function useSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
@@ -41,7 +57,16 @@ export function useSocket() {
 
     function connect(): void {
       if (stopped) return;
-      const ws = new WebSocket(WS_URL);
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(WS_URL);
+      } catch (e) {
+        // コンストラクタ自体が失敗するケース(セキュリティポリシー等)を記録して再試行
+        reportWsDebug({ kind: 'constructor-error', message: (e as Error).message });
+        reconnectTimer = setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
+        return;
+      }
       wsRef.current = ws;
 
       ws.addEventListener('open', () => {
@@ -62,10 +87,11 @@ export function useSocket() {
         }
       });
 
-      ws.addEventListener('close', () => {
+      ws.addEventListener('close', (event) => {
         setConnected(false);
         wsRef.current = null;
         if (stopped) return;
+        reportWsDebug({ kind: 'close', code: event.code, reason: event.reason, wasClean: event.wasClean });
         reconnectTimer = setTimeout(connect, reconnectDelay);
         reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
       });

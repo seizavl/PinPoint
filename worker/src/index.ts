@@ -119,11 +119,16 @@ export default {
     }
 
     // ---- ここから先はセッション必須 ----
-    const session = await verifySession(getCookie(request, 'session'), env.SESSION_SECRET);
+    const rawCookie = getCookie(request, 'session');
+    const session = await verifySession(rawCookie, env.SESSION_SECRET);
 
     if (!session) {
       if (path === '/ws') {
+        console.log(`[auth] /ws rejected: cookie=${rawCookie ? 'present-but-invalid' : 'missing'}`);
         return new Response('Unauthorized', { status: 401 });
+      }
+      if (!path.startsWith('/api/')) {
+        console.log(`[auth] redirect->login path=${path} cookie=${rawCookie ? 'present-but-invalid' : 'missing'}`);
       }
       if (path.startsWith('/api/')) {
         return Response.json({ ok: false, error: 'unauthorized' }, { status: 401 });
@@ -149,12 +154,20 @@ export default {
       return env.ASSETS.fetch(request);
     }
 
+    // WS接続失敗の調査用: クライアントからの診断レポートをログに残す(認証済みのみ)
+    if (request.method === 'POST' && path === '/api/client-log') {
+      const text = (await request.text()).slice(0, 500);
+      console.log(`[client] ${session.sub}: ${text}`);
+      return new Response(null, { status: 204 });
+    }
+
     // ---- WebSocket ----
     if (path === '/ws') {
       const upgradeHeader = request.headers.get('Upgrade');
       if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
         return new Response('Expected Upgrade: websocket', { status: 426 });
       }
+      console.log(`[auth] /ws accepted for ${session.sub} (${session.role})`);
       return locationRoom(env).fetch(request);
     }
 
@@ -197,10 +210,14 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
   }
 
   if (!role) {
+    // ユーザー名は出さない(ログへの機微情報漏れ防止)。失敗の事実だけ記録する。
+    console.log('[auth] login FAILED');
     // タイミング攻撃対策として、失敗時も一定時間待ってからレスポンスを返す
     await new Promise((resolve) => setTimeout(resolve, 300));
     return Response.json({ ok: false }, { status: 401 });
   }
+
+  console.log(`[auth] login OK role=${role}`);
 
   const token = await signSession({ sub: username, role, exp: Date.now() + SESSION_TTL_SEC * 1000 }, env.SESSION_SECRET);
   return new Response(JSON.stringify({ ok: true, role }), {

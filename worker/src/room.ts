@@ -42,6 +42,7 @@ export class LocationRoom {
     // Hibernation API: acceptWebSocket で接続を受け付けると、
     // 以降のメッセージは webSocketMessage/webSocketClose ハンドラに配送される
     this.ctx.acceptWebSocket(server);
+    console.log(`[room] ws connected (total=${this.ctx.getWebSockets().length})`);
 
     const users = await this.loadLocations();
     this.send(server, { event: 'locations_update', payload: { users: Object.fromEntries(users) } });

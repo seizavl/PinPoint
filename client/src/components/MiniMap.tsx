@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -117,10 +118,12 @@ export function MiniMap({ selfPosition, locations, myUserId }: MiniMapProps) {
         )}
       </div>
 
-      {/* 拡大モーダル: 開いたときだけ MapContainer をマウントする(サイズ確定後に描画するため) */}
-      {modalOpen && (
+      {/* 拡大モーダル: 開いたときだけ MapContainer をマウントする(サイズ確定後に描画するため)。
+          CameraAR内のスタッキングコンテキストの影響を受けないよう body 直下へポータルし、
+          ハンバーガーメニュー(z-1100)より確実に上の z-1300 で全面を覆う。 */}
+      {modalOpen && createPortal(
         <div
-          className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/70"
+          className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/70"
           onClick={() => setModalOpen(false)}
         >
           <div
@@ -167,7 +170,8 @@ export function MiniMap({ selfPosition, locations, myUserId }: MiniMapProps) {
               </MapContainer>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </>
   );
