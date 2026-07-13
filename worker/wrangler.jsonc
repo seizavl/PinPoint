@@ -7,13 +7,20 @@
   "assets": {
     "directory": "../client/dist",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
+    // 認証ゲートを効かせるため、静的アセットも必ず Worker を先に通す。
+    // これがないと index.html や /assets/* がWorkerを経由せず直接配信され、未認証でも見えてしまう。
+    "run_worker_first": true
   },
   "durable_objects": {
     "bindings": [
       {
         "name": "ROOM",
         "class_name": "LocationRoom"
+      },
+      {
+        "name": "AUTH",
+        "class_name": "AuthStore"
       }
     ]
   },
@@ -22,6 +29,11 @@
       "tag": "v1",
       // 無料プランでも使えるよう SQLite バックエンドの Durable Object を使用
       "new_sqlite_classes": ["LocationRoom"]
+    },
+    {
+      "tag": "v2",
+      // 認証用ユーザー/招待トークンを保持する AuthStore を追加
+      "new_sqlite_classes": ["AuthStore"]
     }
   ]
 }

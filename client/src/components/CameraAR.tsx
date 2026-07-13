@@ -3,6 +3,8 @@ import { useSocket } from '../hooks/useSocket';
 import { useLivePosition } from '../hooks/useLivePosition';
 import { useLiveOrientation } from '../hooks/useLiveOrientation';
 import { bearingDeg, distanceMeters, relativeBearing } from '../utils/geo';
+import { LogoutButton } from './LogoutButton';
+import { MiniMap } from './MiniMap';
 
 // スマホ背面カメラの想定水平画角(度)。値を調整すれば左右のズレを補正できる。
 const CAMERA_FOV_DEG = 65;
@@ -310,7 +312,8 @@ export function CameraAR() {
           })}
 
           {/* コンパクトHUD: 精度チップ + 静止補正ボタンの1行のみをデフォルト表示 */}
-          <div className="absolute top-2 left-2 right-2 flex items-center gap-2">
+          {/* 右上のハンバーガーメニュー(z-[1100])と重ならないよう right-14 で余白を確保 */}
+          <div className="absolute top-2 left-2 right-14 flex items-center gap-2">
             <div
               className={`flex items-center gap-1.5 rounded-full bg-black/60 px-3 py-1.5 text-xs font-bold backdrop-blur ${accuracyTextClass(accuracyInfo.level)}`}
             >
@@ -337,7 +340,7 @@ export function CameraAR() {
 
           {/* キャリブレーション実行中のみ、詳細な進捗を表示 */}
           {calibration.status !== 'idle' && (
-            <div className="absolute top-12 left-2 right-2 rounded-2xl border border-white/10 bg-black/65 p-3 text-xs shadow-2xl backdrop-blur">
+            <div className="absolute top-12 left-2 right-14 rounded-2xl border border-white/10 bg-black/65 p-3 text-xs shadow-2xl backdrop-blur">
               <div className="mb-1 flex items-center justify-between gap-2">
                 <span
                   className={
@@ -377,6 +380,9 @@ export function CameraAR() {
           <div className="absolute bottom-3 left-3 rounded-full bg-black/60 px-3 py-1.5 text-xs font-bold backdrop-blur">
             🔍 検出: {targets.length}人
           </div>
+
+          {/* ミニマップ(常時表示・タップで拡大モーダル)。ⓘボタンと重ならないよう bottom-16 に配置 */}
+          <MiniMap selfPosition={position} locations={locations} myUserId={myUserId} />
 
           {/* 詳細情報の開閉ボタン */}
           <button
@@ -425,6 +431,9 @@ export function CameraAR() {
                   画面内: {onScreen.length}
                 </div>
                 <div>FOV {CAMERA_FOV_DEG}°H / {fovVDeg.toFixed(0)}°V</div>
+              </div>
+              <div className="mt-2 flex justify-end">
+                <LogoutButton />
               </div>
             </div>
           )}

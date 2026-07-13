@@ -4,6 +4,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { useSocket } from '../hooks/useSocket';
 import { LocationDiagnostics, LocationPayload, LocationSignal, WorldCoordPayload } from '../types';
+import { LogoutButton } from './LogoutButton';
 
 // Leaflet デフォルトアイコン修正
 delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
@@ -93,18 +94,21 @@ export function AdminMap() {
   const defaultCenter: L.LatLngExpression = [35.6762, 139.6503]; // 東京
 
   return (
-    <div className="h-screen flex flex-col bg-slate-900">
+    // h-full: /map では App.tsx 側で画面いっぱいのコンテナに包み、
+    // AdminConsole では高さ指定済みのセクション内にそのまま収まるようにする
+    <div className="h-full flex flex-col bg-slate-900">
       {/* ヘッダー */}
-      <header className="flex items-center justify-between px-4 py-2 bg-slate-800 shadow z-10">
+      <header className="flex items-center justify-between px-4 py-2 pr-12 bg-slate-800 shadow z-10">
         <div className="flex items-center gap-2">
           <span
             className={`w-3 h-3 rounded-full ${connected ? 'bg-green-400' : 'bg-red-500 animate-pulse'}`}
           />
-          <span className="text-white font-bold text-sm">PinPoint 管理者マップ</span>
+          <span className="text-white font-bold text-sm">PinPoint マップ</span>
         </div>
         <div className="flex items-center gap-4 text-sm text-slate-300">
           <span>被災者数: <strong className="text-white">{entries.length}</strong></span>
           <span>接続: <strong className="text-white">{userCount}</strong></span>
+          <LogoutButton />
         </div>
       </header>
 

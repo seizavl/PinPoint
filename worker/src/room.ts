@@ -22,6 +22,15 @@ export class LocationRoom {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    // 全位置情報削除の内部エンドポイント。Worker の /api/admin/clear-locations
+    // (admin認証済み) からのみ呼ばれ、公開ルーティングからは到達しない。
+    if (url.pathname === '/__clear') {
+      await this.clearAllLocations();
+      return Response.json({ ok: true });
+    }
+
     const upgradeHeader = request.headers.get('Upgrade');
     if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
       return new Response('Expected Upgrade: websocket', { status: 426 });
@@ -86,6 +95,16 @@ export class LocationRoom {
 
   async webSocketError(_ws: WebSocket, _error: unknown): Promise<void> {
     this.broadcastUserCount();
+  }
+
+  private async clearAllLocations(): Promise<void> {
+    const stored = await this.ctx.storage.list<LocationPayload>({ prefix: 'loc:' });
+    const keys = Array.from(stored.keys());
+    if (keys.length > 0) {
+      await this.ctx.storage.delete(keys);
+    }
+    this.cache = new Map();
+    this.broadcastAll({ event: 'locations_update', payload: { users: {} } });
   }
 
   private removeStaleLocations(locations: Map<string, LocationPayload>): string[] {

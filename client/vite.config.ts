@@ -14,6 +14,12 @@ export default defineConfig(({ mode }) => {
       VitePWA({
         registerType: 'autoUpdate',
         includeAssets: ['favicon.ico'],
+        workbox: {
+          // ログイン/サインアップ/API/WSはService Workerのナビゲーションフォールバック対象外にする。
+          // これがないとSWがキャッシュ済みindex.htmlを/loginにも返してしまい、
+          // 「/api/meで401 → /loginへ → SWがまたindex.htmlを返す」の無限リロードループになる。
+          navigateFallbackDenylist: [/^\/login/, /^\/signup/, /^\/api\//, /^\/ws$/],
+        },
         manifest: {
           name: 'PinPoint',
           short_name: 'PinPoint',

@@ -4,6 +4,7 @@ import { useOrientation } from '../hooks/useOrientation';
 import { useSocket } from '../hooks/useSocket';
 import { LocationDiagnostics, LocationSignal } from '../types';
 import { StatusBadge } from './StatusBadge';
+import { LogoutButton } from './LogoutButton';
 
 const signalLabels: Record<LocationSignal, string> = {
   gps: 'GPS',
@@ -165,6 +166,9 @@ export function ClientScreen() {
       <div className="text-center">
         <p className="text-xs text-slate-600">ユーザーID: {maskedId}</p>
       </div>
+
+      {/* ログアウト */}
+      <LogoutButton />
     </div>
   );
 }
